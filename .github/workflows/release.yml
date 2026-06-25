@@ -1,0 +1,85 @@
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version to publish, e.g. 1.2.3 (defaults to the tag).'
+        required: false
+
+permissions:
+  id-token: write
+  contents: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  APP_NAME: gws-identitycenter-sync
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Resolve version
+        id: ver
+        run: |
+          V="${{ github.event.inputs.version }}"
+          [ -z "$V" ] && V="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::'$V' is not a semantic version (expected N.N.N)"; exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Publishing version $V"
+
+      - name: Test
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - uses: aws-actions/setup-sam@v3
+        with:
+          use-installer: true
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build & package
+        run: |
+          sam build
+          sam package \
+            --s3-bucket "${{ vars.SAR_ARTIFACTS_BUCKET }}" \
+            --output-template-file packaged.yaml
+
+      - name: Publish to SAR
+        run: |
+          sam publish \
+            --template packaged.yaml \
+            --region "$AWS_REGION" \
+            --semantic-version "${{ steps.ver.outputs.version }}"
+
+      - name: Make the application public
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          APP_ID="arn:aws:serverlessrepo:${AWS_REGION}:${ACCOUNT_ID}:applications/${APP_NAME}"
+          echo "Application: $APP_ID"
+          # Idempotent: grants every AWS account permission to deploy this app.
+          aws serverlessrepo put-application-policy \
+            --region "$AWS_REGION" \
+            --application-id "$APP_ID" \
+            --statements Principals='*',Actions='Deploy'
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"

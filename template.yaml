@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Google Workspace -> AWS IAM Identity Center sync via the Identity Store API.
+  No SCIM endpoint, no bearer token, nothing to rotate.
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: gws-identitycenter-sync
+    Description: >-
+      Keep AWS IAM Identity Center in sync with your Google Workspace groups and their
+      members using the Identity Store API directly — no SCIM endpoint and no
+      annually-expiring bearer token to rotate. Scheduled, with dry-run and gated pruning.
+    Author: kgns
+    SpdxLicenseId: Apache-2.0
+    LicenseUrl: LICENSE
+    ReadmeUrl: README.md
+    Labels: ['google-workspace', 'iam-identity-center', 'sso', 'identity-store', 'directory-sync', 'lambda']
+    HomePageUrl: https://github.com/kgns/gws-identitycenter-sync
+    SemanticVersion: 1.0.0
+    SourceCodeUrl: https://github.com/kgns/gws-identitycenter-sync
+
+Parameters:
+  IdentityStoreId:
+    Type: String
+    Default: ''
+    Description: 'Identity store id, e.g. d-1234567890. Empty = auto-discover via sso:ListInstances (set explicitly if the account has more than one Identity Center instance).'
+  GoogleAdminEmail:
+    Type: String
+    Description: Workspace admin to impersonate via domain-wide delegation.
+  GoogleServiceAccountJSON:
+    Type: String
+    NoEcho: true
+    Description: Service-account JSON key (stored in Secrets Manager). Update the secret directly to rotate.
+  GoogleGroupsQuery:
+    Type: String
+    Default: ''
+    Description: 'Directory API group search, e.g. "name:iam-*". Empty = all groups.'
+  ManagedGroupPrefix:
+    Type: String
+    Default: ''
+    Description: 'Case-folded display-name prefix that gates deletes/prune, e.g. "iam-". Empty = never delete/prune.'
+  PruneUsers:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  DryRun:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: 'Log intended changes without applying. Defaults true so a fresh deploy is safe; set false to go live.'
+  ScheduleExpression:
+    Type: String
+    Default: rate(15 minutes)
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+  StateKey:
+    Type: String
+    Default: state.json
+    Description: Object key for the join-table state file in the state bucket.
+  FunctionName:
+    Type: String
+    Default: gws-identitycenter-sync
+  MemorySize:
+    Type: Number
+    Default: 256
+  Timeout:
+    Type: Number
+    Default: 300
+  LogLevel:
+    Type: String
+    Default: info
+    AllowedValues: ['debug', 'info', 'warn', 'error']
+  LogFormat:
+    Type: String
+    Default: json
+    AllowedValues: ['json', 'text']
+
+Resources:
+  GoogleCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: gws-identitycenter-sync/google-credentials
+      SecretString: !Ref GoogleServiceAccountJSON
+
+  # Join table (googleId -> Identity Store id). Versioning on so a bad write is
+  # recoverable; if the object is lost, the engine falls back to natural-key matching.
+  StateBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'gws-identitycenter-sync-state-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  SyncFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Ref FunctionName
+      Runtime: provided.al2023
+      Handler: bootstrap
+      Architectures: [arm64]
+      MemorySize: !Ref MemorySize
+      Timeout: !Ref Timeout
+      Environment:
+        Variables:
+          IDENTITY_STORE_ID: !Ref IdentityStoreId
+          GOOGLE_ADMIN_EMAIL: !Ref GoogleAdminEmail
+          GOOGLE_CREDENTIALS_SECRET: !Ref GoogleCredentialsSecret
+          GOOGLE_GROUPS_QUERY: !Ref GoogleGroupsQuery
+          MANAGED_GROUP_PREFIX: !Ref ManagedGroupPrefix
+          PRUNE_USERS: !Ref PruneUsers
+          DRY_RUN: !Ref DryRun
+          STATE_BUCKET: !Ref StateBucket
+          STATE_KEY: !Ref StateKey
+          LOG_LEVEL: !Ref LogLevel
+          LOG_FORMAT: !Ref LogFormat
+      Policies:
+        - Statement:
+            - Sid: IdentityStoreReadWrite
+              Effect: Allow
+              Action:
+                - identitystore:ListUsers
+                - identitystore:ListGroups
+                - identitystore:ListGroupMemberships
+                - identitystore:GetGroupMembershipId
+                - identitystore:CreateUser
+                - identitystore:UpdateUser
+                - identitystore:DeleteUser
+                - identitystore:CreateGroup
+                - identitystore:UpdateGroup
+                - identitystore:DeleteGroup
+                - identitystore:CreateGroupMembership
+                - identitystore:DeleteGroupMembership
+              Resource: '*'
+            - Sid: DiscoverIdentityStore
+              Effect: Allow
+              Action:
+                - sso:ListInstances
+              Resource: '*'
+            - Sid: StateBucketReadWrite
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub '${StateBucket.Arn}/*'
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref GoogleCredentialsSecret
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref ScheduleExpression
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${SyncFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+
+Outputs:
+  FunctionArn:
+    Value: !GetAtt SyncFunction.Arn
+  GoogleCredentialsSecretArn:
+    Value: !Ref GoogleCredentialsSecret
+  StateBucketName:
+    Value: !Ref StateBucket
