@@ -155,6 +155,11 @@ Resources:
                 - s3:GetObject
                 - s3:PutObject
               Resource: !Sub '${StateBucket.Arn}/*'
+            - Sid: StateBucketList
+              Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !GetAtt StateBucket.Arn
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref GoogleCredentialsSecret
       Events:
