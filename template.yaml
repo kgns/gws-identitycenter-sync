@@ -17,7 +17,7 @@ Metadata:
     ReadmeUrl: README.md
     Labels: ['google-workspace', 'iam-identity-center', 'sso', 'identity-store', 'directory-sync', 'lambda']
     HomePageUrl: https://github.com/kgns/gws-identitycenter-sync
-    SemanticVersion: 1.0.0
+    SemanticVersion: 1.0.1
     SourceCodeUrl: https://github.com/kgns/gws-identitycenter-sync
 
 Parameters:

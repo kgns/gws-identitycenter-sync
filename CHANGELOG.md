@@ -7,7 +7,15 @@ contract (template parameters / env vars); a breaking change to it bumps the maj
 
 ## [Unreleased]
 
-## [1.0.0]
+## [1.0.1] - 2026-06-26
+
+### Fixed
+
+- Grant `s3:ListBucket` on the state bucket. Without it, a first run (no `state.json` yet)
+  failed with `403 AccessDenied` instead of reading an empty state — S3 returns 403 rather
+  than 404 for a missing object when the caller cannot list the bucket.
+
+## [1.0.0] - 2026-06-26
 
 ### Added
 
@@ -24,5 +32,6 @@ contract (template parameters / env vars); a breaking change to it bumps the maj
 - SAM deployment as a scheduled Lambda; published to the AWS Serverless Application
   Repository.
 
-[Unreleased]: https://github.com/kgns/gws-identitycenter-sync/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/kgns/gws-identitycenter-sync/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/kgns/gws-identitycenter-sync/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/kgns/gws-identitycenter-sync/releases/tag/v1.0.0
